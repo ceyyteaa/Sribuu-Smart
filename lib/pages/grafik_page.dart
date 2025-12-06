@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; 
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'home_page.dart';
 import 'tips_keuangan_page.dart';
 import 'goal_page.dart';
 import 'laporan_keuangan_page.dart';
-import 'leaderboard_page.dart'; // 1. IMPORT FILE LEADERBOARD
+import 'leaderboard_page.dart';
 
 class GrafikPage extends StatefulWidget {
   final List<Map<String, dynamic>> transaksi;
   final int saldo;
-  // 💡 BARU: Tambahkan parameter goal untuk diteruskan
   final String? currentGoalName;
   final double? currentGoalTarget;
   final double? currentGoalProgress;
@@ -21,11 +20,10 @@ class GrafikPage extends StatefulWidget {
     Key? key,
     required this.transaksi,
     required this.saldo,
-    this.currentGoalName, // Terima Nama Goal
-    this.currentGoalTarget, // Terima Target
-    this.currentGoalProgress, // Terima Progress
+    this.currentGoalName,
+    this.currentGoalTarget,
+    this.currentGoalProgress,
   }) : super(key: key);
-
 
   @override
   State<GrafikPage> createState() => _GrafikPageState();
@@ -34,22 +32,64 @@ class GrafikPage extends StatefulWidget {
 class _GrafikPageState extends State<GrafikPage> {
   bool isBarChart = true;
 
+  // 1. STATE UNTUK FILTER (AC: Grafik dapat difilter per bulan/tahun)
+  late int selectedMonth;
+  late int selectedYear;
+  final List<int> availableYears = [];
 
-  
-  // 💡 Fungsi Helper: Mengambil DateTime dari data transaksi
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    selectedMonth = now.month;
+    selectedYear = now.year;
+    _generateAvailableYears();
+  }
+
+  // Helper: Generate tahun yang ada di data transaksi
+  void _generateAvailableYears() {
+    availableYears.clear();
+    availableYears.add(DateTime.now().year); // Selalu masukkan tahun sekarang
+    for (var item in widget.transaksi) {
+      final date = _getTanggal(item);
+      if (!availableYears.contains(date.year)) {
+        availableYears.add(date.year);
+      }
+    }
+    availableYears.sort(); // Urutkan tahun
+  }
+
+  // Helper: Ambil tanggal
   DateTime _getTanggal(Map<String, dynamic> item) {
     if (item['tanggal'] is Timestamp) {
       return (item['tanggal'] as Timestamp).toDate();
-    } 
+    }
     if (item['tanggal'] is String) {
-       return DateTime.parse(item['tanggal']);
+      return DateTime.parse(item['tanggal']);
     }
     return DateTime.now();
   }
 
-  // Ambil dan urutkan tanggal
+  // 2. LOGIKA FILTER DATA TRANSAKSI
+  List<Map<String, dynamic>> get _filteredTransaksi {
+    return widget.transaksi.where((item) {
+      final date = _getTanggal(item);
+      return date.month == selectedMonth && date.year == selectedYear;
+    }).toList();
+  }
+
+  // Helper: Format Rupiah
+  String _formatCurrency(double value) {
+    return NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0).format(value);
+  }
+
+  // --- LOGIKA CHART (Diperbarui menggunakan _filteredTransaksi) ---
+
   List<String> _getSortedDates({bool hanyaYangAdaData = false}) {
-    final semuaTanggal = widget.transaksi
+    // Gunakan _filteredTransaksi agar sumbu X sesuai filter bulan
+    final dataSumber = _filteredTransaksi; 
+    
+    final semuaTanggal = dataSumber
         .map((item) => DateFormat('dd/MM/yyyy').format(_getTanggal(item)))
         .toSet()
         .toList();
@@ -57,32 +97,22 @@ class _GrafikPageState extends State<GrafikPage> {
     semuaTanggal.sort((a, b) =>
         DateFormat('dd/MM/yyyy').parse(a).compareTo(DateFormat('dd/MM/yyyy').parse(b)));
 
-    if (!hanyaYangAdaData) return semuaTanggal;
-
-    return semuaTanggal.where((tanggalStr) {
-      final totalMasuk = widget.transaksi.where((item) =>
-          item['jenis'] == 'masuk' &&
-          DateFormat('dd/MM/yyyy').format(_getTanggal(item)) == tanggalStr);
-      final totalKeluar = widget.transaksi.where((item) =>
-          item['jenis'] == 'keluar' &&
-          DateFormat('dd/MM/yyyy').format(_getTanggal(item)) == tanggalStr);
-      return totalMasuk.isNotEmpty || totalKeluar.isNotEmpty;
-    }).toList();
+    return semuaTanggal;
   }
 
-  // Buat data campuran (masuk dan keluar) untuk Bar Chart (Grouped Bars)
   List<BarChartGroupData> _generateCampuranData() {
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
     List<BarChartGroupData> barGroups = [];
+    final dataSumber = _filteredTransaksi;
 
     for (int i = 0; i < sortedDates.length; i++) {
       final tanggal = sortedDates[i];
-      final totalMasuk = widget.transaksi
+      final totalMasuk = dataSumber
           .where((item) =>
               item['jenis'] == 'masuk' &&
               DateFormat('dd/MM/yyyy').format(_getTanggal(item)) == tanggal)
           .fold(0, (sum, item) => sum + (item['jumlah'] as int));
-      final totalKeluar = widget.transaksi
+      final totalKeluar = dataSumber
           .where((item) =>
               item['jenis'] == 'keluar' &&
               DateFormat('dd/MM/yyyy').format(_getTanggal(item)) == tanggal)
@@ -92,19 +122,18 @@ class _GrafikPageState extends State<GrafikPage> {
         barGroups.add(
           BarChartGroupData(
             x: i,
-            // Rods akan otomatis dikelompokkan berdampingan
             barRods: [
-              // Pemasukan
               BarChartRodData(
-                toY: totalMasuk.toDouble(), 
-                color: Colors.green, 
+                toY: totalMasuk.toDouble(),
+                color: Colors.green,
                 width: 10,
+                borderRadius: BorderRadius.circular(2),
               ),
-              // Pengeluaran
               BarChartRodData(
-                toY: totalKeluar.toDouble(), 
-                color: Colors.red, 
+                toY: totalKeluar.toDouble(),
+                color: Colors.red,
                 width: 10,
+                borderRadius: BorderRadius.circular(2),
               ),
             ],
             barsSpace: 4,
@@ -115,14 +144,14 @@ class _GrafikPageState extends State<GrafikPage> {
     return barGroups;
   }
 
-  // Buat data tunggal (hanya masuk / keluar)
   List<BarChartGroupData> _generateSingleTypeData(String type) {
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
     List<BarChartGroupData> barGroups = [];
+    final dataSumber = _filteredTransaksi;
 
     for (int i = 0; i < sortedDates.length; i++) {
       final tanggal = sortedDates[i];
-      final total = widget.transaksi
+      final total = dataSumber
           .where((item) =>
               item['jenis'] == type &&
               DateFormat('dd/MM/yyyy').format(_getTanggal(item)) == tanggal)
@@ -133,7 +162,7 @@ class _GrafikPageState extends State<GrafikPage> {
         barGroups.add(
           BarChartGroupData(
             x: i,
-            barRods: [BarChartRodData(toY: total.toDouble(), color: barColor, width: 14)],
+            barRods: [BarChartRodData(toY: total.toDouble(), color: barColor, width: 14, borderRadius: BorderRadius.circular(2))],
           ),
         );
       }
@@ -141,14 +170,14 @@ class _GrafikPageState extends State<GrafikPage> {
     return barGroups;
   }
 
-  // Buat titik data untuk line chart
   List<FlSpot> _generateLineSpots(String type) {
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
     List<FlSpot> spots = [];
+    final dataSumber = _filteredTransaksi;
 
     for (int i = 0; i < sortedDates.length; i++) {
       final tanggal = sortedDates[i];
-      final total = widget.transaksi
+      final total = dataSumber
           .where((item) =>
               item['jenis'] == type &&
               DateFormat('dd/MM/yyyy').format(_getTanggal(item)) == tanggal)
@@ -159,10 +188,10 @@ class _GrafikPageState extends State<GrafikPage> {
     }
     return spots;
   }
-  
-  // 💡 Penyesuaian Drawer Item: Tambahkan opsi replace
-  ListTile _drawerItem(
-      BuildContext context, IconData icon, String title, Widget page, Color color, {bool replace = false}) {
+
+  // --- UI COMPONENTS ---
+
+  ListTile _drawerItem(BuildContext context, IconData icon, String title, Widget page, Color color, {bool replace = false}) {
     return ListTile(
       leading: Icon(icon, color: color),
       title: Text(title, style: const TextStyle(fontSize: 16)),
@@ -178,12 +207,18 @@ class _GrafikPageState extends State<GrafikPage> {
     );
   }
 
-  // =================== UI ===================
   @override
   Widget build(BuildContext context) {
     Intl.defaultLocale = 'id';
-    final tanggalSekarang =
-        DateFormat('EEEE, dd MMM yyyy HH:mm').format(DateTime.now());
+
+    // Hitung Ringkasan untuk ditampilkan di bawah grafik (AC: Total saldo ditampilkan di bawah grafik)
+    double totalMasukBulanIni = _filteredTransaksi
+        .where((e) => e['jenis'] == 'masuk')
+        .fold(0, (sum, e) => sum + (e['jumlah'] as int));
+    double totalKeluarBulanIni = _filteredTransaksi
+        .where((e) => e['jenis'] == 'keluar')
+        .fold(0, (sum, e) => sum + (e['jumlah'] as int));
+    double selisihBulanIni = totalMasukBulanIni - totalKeluarBulanIni;
 
     return DefaultTabController(
       length: 3,
@@ -191,7 +226,7 @@ class _GrafikPageState extends State<GrafikPage> {
         appBar: AppBar(
           title: const Text('Grafik Keuangan'),
           centerTitle: true,
-          elevation: 4,
+          elevation: 0,
           flexibleSpace: Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
@@ -205,11 +240,11 @@ class _GrafikPageState extends State<GrafikPage> {
             IconButton(
               icon: Icon(isBarChart ? Icons.show_chart : Icons.bar_chart),
               onPressed: () => setState(() => isBarChart = !isBarChart),
-              tooltip: "Ubah tampilan grafik",
+              tooltip: "Ubah Tampilan Grafik",
             ),
-        
           ],
           bottom: const TabBar(
+            indicatorColor: Colors.white,
             tabs: [
               Tab(text: "Campuran"),
               Tab(text: "Menerima"),
@@ -217,8 +252,6 @@ class _GrafikPageState extends State<GrafikPage> {
             ],
           ),
         ),
-
-        // 💡 Drawer dengan Navigasi GoalPage Langsung
         drawer: Drawer(
           child: ListView(
             padding: EdgeInsets.zero,
@@ -234,115 +267,71 @@ class _GrafikPageState extends State<GrafikPage> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // 💡 Menggunakan Gambar Aset Lokal
                     Image.asset(
-                      'assets/Sribuu Smart.png',
-                      height: 126,
-                      width: 126,
+                      'assets/Sribuu_Smart.png',
+                      height: 100,
+                      width: 100,
                       fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) {
-                        return const Icon(Icons.account_balance_wallet, size: 80, color: Colors.white);
-                      },
+                      errorBuilder: (context, error, stackTrace) =>
+                          const Icon(Icons.account_balance_wallet, size: 80, color: Colors.white),
                     ),
                     const SizedBox(height: 10),
                   ],
                 ),
               ),
-
-              // 🔹 BERANDA
-              _drawerItem(
-                context,
-                Icons.home,
-                "Beranda",
-                HomePage(
-                    transaksi: widget.transaksi,
-                    saldo: widget.saldo), 
-                Colors.blue,
-                replace: true,
-              ),
-
-              // 🔹 GRAFIK KEUANGAN (tetap di halaman ini)
-              ListTile(
-                leading: const Icon(Icons.show_chart, color: Colors.blue),
-                title: const Text("Grafik Keuangan"),
-                onTap: () => Navigator.pop(context), // Tutup drawer
-              ),
-
-              // 🔹 TIPS KEUANGAN
-              _drawerItem(
-                context,
-                Icons.lightbulb,
-                "Tips Keuangan",
-                TipsKeuanganPage(
-                  transaksi: widget.transaksi,
-                  saldo: widget.saldo,
-                  // Kirimkan data goal
-                  currentGoalName: widget.currentGoalName, 
-                  currentGoalTarget: widget.currentGoalTarget, 
-                  currentGoalProgress: widget.currentGoalProgress, 
-                ),
-                Colors.orange,
-                replace: true,
-              ),
-
-              // 🔹 GOAL SAVING (Menuju GoalPage secara langsung)
-              _drawerItem(
-                context,
-                Icons.savings,
-                "Goal Saving",
-                GoalPage(
-                  totalSaldo: widget.saldo,
-                  transaksi: widget.transaksi,
-                  // Kirimkan fungsi placeholder yang sekarang menerima Nama, Target, Progress
-                  onGoalUpdate: (name, target, progress) {
-                    // Fungsi kosong.
-                  },
-                  currentGoalName: widget.currentGoalName,
-                  currentGoalTarget: widget.currentGoalTarget,
-                  currentGoalProgress: widget.currentGoalProgress,
-                ),
-                Colors.green,
-                replace: true,
-              ),
-
-              // 🔹 LAPORAN KEUANGAN
-              _drawerItem(
-                context,
-                Icons.table_chart,
-                "Laporan Keuangan",
-                LaporanKeuanganPage(
-                  transaksi: widget.transaksi,
-                  // Kirimkan data goal
-                  currentGoalName: widget.currentGoalName, 
-                  currentGoalTarget: widget.currentGoalTarget, 
-                  currentGoalProgress: widget.currentGoalProgress, 
-                ),
-                Colors.indigo,
-                replace: true,
-              ),
-
-              // 🔹 LEADERBOARD (Ditambahkan di sini)
-              _drawerItem(
-                context,
-                Icons.leaderboard,
-                "Leaderboard",
-                LeaderboardPage(
-                  transaksi: widget.transaksi,
-                  saldo: widget.saldo,
-                ),
-                Colors.red,
-                replace: true,
-              ),
+               _drawerItem(context, Icons.home, "Beranda", HomePage(transaksi: widget.transaksi, saldo: widget.saldo), Colors.blue, replace: true),
+              ListTile(leading: const Icon(Icons.show_chart, color: Colors.blue), title: const Text("Grafik Keuangan"), onTap: () => Navigator.pop(context)),
+              _drawerItem(context, Icons.lightbulb, "Tips Keuangan", TipsKeuanganPage(transaksi: widget.transaksi, saldo: widget.saldo, currentGoalName: widget.currentGoalName, currentGoalTarget: widget.currentGoalTarget, currentGoalProgress: widget.currentGoalProgress), Colors.orange, replace: true),
+              _drawerItem(context, Icons.savings, "Goal Saving", GoalPage(totalSaldo: widget.saldo, transaksi: widget.transaksi, onGoalUpdate: (n, t, p) {}, currentGoalName: widget.currentGoalName, currentGoalTarget: widget.currentGoalTarget, currentGoalProgress: widget.currentGoalProgress), Colors.green, replace: true),
+              _drawerItem(context, Icons.table_chart, "Laporan Keuangan", LaporanKeuanganPage(transaksi: widget.transaksi, currentGoalName: widget.currentGoalName, currentGoalTarget: widget.currentGoalTarget, currentGoalProgress: widget.currentGoalProgress), Colors.indigo, replace: true),
+              _drawerItem(context, Icons.leaderboard, "Leaderboard", LeaderboardPage(transaksi: widget.transaksi, saldo: widget.saldo), Colors.red, replace: true),
             ],
           ),
         ),
-
-        // Body
         body: Column(
           children: [
-            // 💡 Legenda
+            // 3. UI FILTER BULAN & TAHUN
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: Colors.grey.shade50,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Dropdown Bulan
+                  DropdownButton<int>(
+                    value: selectedMonth,
+                    underline: Container(),
+                    items: List.generate(12, (index) {
+                      return DropdownMenuItem(
+                        value: index + 1,
+                        child: Text(DateFormat('MMMM', 'id_ID').format(DateTime(2023, index + 1))),
+                      );
+                    }),
+                    onChanged: (val) {
+                      if (val != null) setState(() => selectedMonth = val);
+                    },
+                  ),
+                  // Dropdown Tahun
+                  DropdownButton<int>(
+                    value: selectedYear,
+                    underline: Container(),
+                    items: availableYears.map((year) {
+                      return DropdownMenuItem(
+                        value: year,
+                        child: Text(year.toString()),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) setState(() => selectedYear = val);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            
+            // Legenda
             Padding(
-              padding: const EdgeInsets.only(top: 8.0),
+              padding: const EdgeInsets.symmetric(vertical: 8.0),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -352,6 +341,8 @@ class _GrafikPageState extends State<GrafikPage> {
                 ],
               ),
             ),
+
+            // AREA GRAFIK
             Expanded(
               child: TabBarView(
                 children: [
@@ -361,14 +352,45 @@ class _GrafikPageState extends State<GrafikPage> {
                 ],
               ),
             ),
+
+            // 4. SUMMARY TOTAL SALDO DI BAWAH GRAFIK (AC TERPENUHI)
             Container(
-              padding: const EdgeInsets.all(12),
-              color: Colors.grey.shade100,
-              width: double.infinity,
-              child: Text(
-                "Diperbarui: $tanggalSekarang",
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 14, fontStyle: FontStyle.italic),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 10, offset: const Offset(0, -3))],
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Ringkasan ${DateFormat('MMMM yyyy', 'id_ID').format(DateTime(selectedYear, selectedMonth))}",
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _buildSummaryItem("Masuk", totalMasukBulanIni, Colors.green),
+                      _buildSummaryItem("Keluar", totalKeluarBulanIni, Colors.red),
+                      // Total Saldo (Surplus/Defisit Periode Ini)
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text("Saldo Periode", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                          const SizedBox(height: 4),
+                          Text(
+                            _formatCurrency(selisihBulanIni),
+                            style: TextStyle(
+                              color: selisihBulanIni >= 0 ? Colors.blue : Colors.red,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ],
@@ -377,14 +399,42 @@ class _GrafikPageState extends State<GrafikPage> {
     );
   }
 
+  Widget _buildSummaryItem(String label, double amount, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+        const SizedBox(height: 4),
+        Text(
+          _formatCurrency(amount),
+          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
+        ),
+      ],
+    );
+  }
+
   Widget _buildGraphContainer(Widget chart) {
+    // Jika tidak ada data, tampilkan pesan
+    if (_filteredTransaksi.isEmpty) {
+       return Center(
+         child: Column(
+           mainAxisAlignment: MainAxisAlignment.center,
+           children: [
+             Icon(Icons.bar_chart_outlined, size: 60, color: Colors.grey[300]),
+             const SizedBox(height: 10),
+             Text("Tidak ada data di periode ini", style: TextStyle(color: Colors.grey[500])),
+           ],
+         ),
+       );
+    }
+
     return Padding(
-      padding: const EdgeInsets.all(16.0),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
       child: Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        elevation: 4,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 2,
         child: Padding(
-          padding: const EdgeInsets.only(top: 16, right: 16, bottom: 8, left: 4),
+          padding: const EdgeInsets.only(top: 24, right: 24, bottom: 12, left: 8),
           child: chart,
         ),
       ),
@@ -394,89 +444,47 @@ class _GrafikPageState extends State<GrafikPage> {
   Widget _buildLegend(Color color, String text) {
     return Row(
       children: [
-        Container(
-          width: 12,
-          height: 12,
-          color: color,
-        ),
-        const SizedBox(width: 4),
-        Text(text, style: const TextStyle(fontSize: 13)),
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Text(text, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
       ],
     );
   }
 
-
-  // =================== CHART LOGIC ===================
+  // =================== CHART LOGIC (BAR & LINE) ===================
 
   Widget _buildBarChartCampuran() {
     final barData = _generateCampuranData();
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
 
-    if (barData.isEmpty) return const Center(child: Text("Belum ada data transaksi"));
+    if (barData.isEmpty) return const SizedBox.shrink();
 
-    final maxY = barData
+    double maxY = 0;
+    try {
+       maxY = barData
         .map((e) => e.barRods.map((r) => r.toY).reduce((a, b) => a > b ? a : b))
         .reduce((a, b) => a > b ? a : b) * 1.2;
+    } catch (e) { maxY = 100000; } // Fallback jika error
 
     return BarChart(
       BarChartData(
-        alignment: BarChartAlignment.spaceBetween,
+        alignment: BarChartAlignment.spaceAround,
         maxY: maxY,
         barGroups: barData,
-        titlesData: FlTitlesData(
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              interval: 1,
-              reservedSize: 36,
-              getTitlesWidget: (value, meta) {
-                final index = value.toInt();
-                if (index < 0 || index >= sortedDates.length) return const SizedBox.shrink();
-                final dateParts = sortedDates[index].split('/');
-                return SideTitleWidget(
-                  axisSide: meta.axisSide,
-                  space: 4,
-                  child: Text(
-                    '${dateParts[0]}/${dateParts[1]}',
-                    style: const TextStyle(fontSize: 10),
-                    textAlign: TextAlign.center,
-                  ),
-                );
-              },
-            ),
-          ),
-          leftTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              reservedSize: 40,
-              getTitlesWidget: (value, meta) {
-                return Text(
-                  NumberFormat.compact(locale: 'id_ID').format(value),
-                  style: const TextStyle(fontSize: 10),
-                );
-              },
-            ),
-          ),
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        ),
-        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xff37434d), width: 1)),
-        gridData: const FlGridData(show: true, drawVerticalLine: false),
+        titlesData: _buildTitlesData(sortedDates),
+        borderData: FlBorderData(show: false),
+        gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1)),
         barTouchData: BarTouchData(
           touchTooltipData: BarTouchTooltipData(
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
               String type = (rodIndex == 0) ? 'Pemasukan' : 'Pengeluaran';
               return BarTooltipItem(
                 '$type\n',
-                TextStyle(color: rod.color, fontWeight: FontWeight.bold, fontSize: 12),
+                TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
                 children: <TextSpan>[
                   TextSpan(
-                    text: NumberFormat.currency(locale: 'id_ID', symbol: 'Rp', decimalDigits: 0).format(rod.toY),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                    ),
+                    text: _formatCurrency(rod.toY),
+                    style: TextStyle(color: rodIndex == 0 ? Colors.greenAccent : Colors.redAccent, fontSize: 12, fontWeight: FontWeight.w500),
                   ),
                 ],
               );
@@ -492,77 +500,30 @@ class _GrafikPageState extends State<GrafikPage> {
     final keluarSpots = _generateLineSpots('keluar');
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
 
-    if (sortedDates.isEmpty) {
-      return const Center(child: Text("Belum ada data transaksi"));
-    }
-    
+    if (masukSpots.isEmpty && keluarSpots.isEmpty) return const SizedBox.shrink();
+
     double maxY = 0;
-    if (masukSpots.isNotEmpty) maxY = masukSpots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
-    if (keluarSpots.isNotEmpty) {
-      final maxKeluar = keluarSpots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
-      if (maxKeluar > maxY) maxY = maxKeluar;
+    if (masukSpots.isNotEmpty) {
+      double maxM = masukSpots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
+      if (maxM > maxY) maxY = maxM;
     }
-    maxY *= 1.2;
+    if (keluarSpots.isNotEmpty) {
+      double maxK = keluarSpots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
+      if (maxK > maxY) maxY = maxK;
+    }
+    maxY = (maxY == 0 ? 100000 : maxY) * 1.2;
 
     return LineChart(
       LineChartData(
         minX: 0,
-        maxX: sortedDates.length > 0 ? (sortedDates.length - 1).toDouble() : 0,
+        maxX: sortedDates.isNotEmpty ? (sortedDates.length - 1).toDouble() : 0,
         maxY: maxY,
-        titlesData: FlTitlesData(
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              interval: 1,
-              reservedSize: 36,
-              getTitlesWidget: (value, meta) {
-                final index = value.toInt();
-                if (index < 0 || index >= sortedDates.length) return const SizedBox.shrink();
-                final dateParts = sortedDates[index].split('/');
-                return SideTitleWidget(
-                  axisSide: meta.axisSide,
-                  space: 4,
-                  child: Text(
-                    '${dateParts[0]}/${dateParts[1]}',
-                    style: const TextStyle(fontSize: 10),
-                    textAlign: TextAlign.center,
-                  ),
-                );
-              },
-            ),
-          ),
-          leftTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              reservedSize: 40,
-              getTitlesWidget: (value, meta) {
-                return Text(
-                  NumberFormat.compact(locale: 'id_ID').format(value),
-                  style: const TextStyle(fontSize: 10),
-                );
-              },
-            ),
-          ),
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        ),
-        gridData: const FlGridData(show: true, drawVerticalLine: false),
-        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xff37434d), width: 1)),
+        titlesData: _buildTitlesData(sortedDates),
+        gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1)),
+        borderData: FlBorderData(show: false),
         lineBarsData: [
-          LineChartBarData(
-            spots: masukSpots, 
-            isCurved: true, 
-            color: Colors.green, 
-            dotData: const FlDotData(show: true),
-            belowBarData: BarAreaData(show: false),
-            ),
-          LineChartBarData(
-            spots: keluarSpots, 
-            isCurved: true, 
-            color: Colors.red, 
-            dotData: const FlDotData(show: true),
-            belowBarData: BarAreaData(show: false),
-            ),
+          LineChartBarData(spots: masukSpots, isCurved: true, color: Colors.green, dotData: const FlDotData(show: true), belowBarData: BarAreaData(show: false), barWidth: 3),
+          LineChartBarData(spots: keluarSpots, isCurved: true, color: Colors.red, dotData: const FlDotData(show: true), belowBarData: BarAreaData(show: false), barWidth: 3),
         ],
       ),
     );
@@ -571,73 +532,26 @@ class _GrafikPageState extends State<GrafikPage> {
   Widget _buildBarChartSingle(String type) {
     final barData = _generateSingleTypeData(type);
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
+    if (barData.isEmpty) return const SizedBox.shrink();
 
-    if (barData.isEmpty) return const Center(child: Text("Belum ada data transaksi"));
-
-    final maxY =
-        barData.map((e) => e.barRods[0].toY).reduce((a, b) => a > b ? a : b) * 1.2;
+    final maxY = barData.map((e) => e.barRods[0].toY).reduce((a, b) => a > b ? a : b) * 1.2;
     final color = type == 'masuk' ? Colors.green : Colors.red;
 
     return BarChart(
       BarChartData(
-        alignment: BarChartAlignment.spaceBetween,
+        alignment: BarChartAlignment.spaceAround,
         maxY: maxY,
         barGroups: barData,
-        titlesData: FlTitlesData(
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              interval: 1,
-              reservedSize: 36,
-              getTitlesWidget: (value, meta) {
-                final index = value.toInt();
-                if (index < 0 || index >= sortedDates.length) return const SizedBox.shrink();
-                final dateParts = sortedDates[index].split('/');
-                return SideTitleWidget(
-                  axisSide: meta.axisSide,
-                  space: 4,
-                  child: Text(
-                    '${dateParts[0]}/${dateParts[1]}',
-                    style: const TextStyle(fontSize: 10),
-                    textAlign: TextAlign.center,
-                  ),
-                );
-              },
-            ),
-          ),
-          leftTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              reservedSize: 40,
-              getTitlesWidget: (value, meta) {
-                return Text(
-                  NumberFormat.compact(locale: 'id_ID').format(value),
-                  style: const TextStyle(fontSize: 10),
-                );
-              },
-            ),
-          ),
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        ),
-        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xff37434d), width: 1)),
-        gridData: const FlGridData(show: true, drawVerticalLine: false),
-         barTouchData: BarTouchData(
+        titlesData: _buildTitlesData(sortedDates),
+        borderData: FlBorderData(show: false),
+        gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1)),
+        barTouchData: BarTouchData(
           touchTooltipData: BarTouchTooltipData(
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
               return BarTooltipItem(
                 '${type == 'masuk' ? 'Menerima' : 'Membayar'}\n',
-                TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
-                children: <TextSpan>[
-                  TextSpan(
-                    text: NumberFormat.currency(locale: 'id_ID', symbol: 'Rp', decimalDigits: 0).format(rod.toY),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
+                const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                children: [TextSpan(text: _formatCurrency(rod.toY), style: TextStyle(color: color, fontSize: 12))],
               );
             },
           ),
@@ -645,71 +559,50 @@ class _GrafikPageState extends State<GrafikPage> {
       ),
     );
   }
-  
+
   Widget _buildLineChartSingle(String type) {
     final spots = _generateLineSpots(type);
     final sortedDates = _getSortedDates(hanyaYangAdaData: true);
-
-    if (spots.isEmpty) return const Center(child: Text("Belum ada data transaksi"));
+    if (spots.isEmpty) return const SizedBox.shrink();
 
     final color = type == 'masuk' ? Colors.green : Colors.red;
-    
     double maxY = spots.map((e) => e.y).reduce((a, b) => a > b ? a : b) * 1.2;
 
     return LineChart(
       LineChartData(
         minX: 0,
-        maxX: sortedDates.length > 0 ? (sortedDates.length - 1).toDouble() : 0,
+        maxX: sortedDates.isNotEmpty ? (sortedDates.length - 1).toDouble() : 0,
         maxY: maxY,
-        titlesData: FlTitlesData(
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              interval: 1,
-              reservedSize: 36,
-              getTitlesWidget: (value, meta) {
-                final index = value.toInt();
-                if (index < 0 || index >= sortedDates.length) return const SizedBox.shrink();
-                final dateParts = sortedDates[index].split('/');
-                return SideTitleWidget(
-                  axisSide: meta.axisSide,
-                  space: 4,
-                  child: Text(
-                    '${dateParts[0]}/${dateParts[1]}',
-                    style: const TextStyle(fontSize: 10),
-                    textAlign: TextAlign.center,
-                  ),
-                );
-              },
-            ),
-          ),
-          leftTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              reservedSize: 40,
-              getTitlesWidget: (value, meta) {
-                return Text(
-                  NumberFormat.compact(locale: 'id_ID').format(value),
-                  style: const TextStyle(fontSize: 10),
-                );
-              },
-            ),
-          ),
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        ),
-        gridData: const FlGridData(show: true, drawVerticalLine: false),
-        borderData: FlBorderData(show: true, border: Border.all(color: const Color(0xff37434d), width: 1)),
+        titlesData: _buildTitlesData(sortedDates),
+        gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1)),
+        borderData: FlBorderData(show: false),
         lineBarsData: [
-          LineChartBarData(
-            spots: spots, 
-            isCurved: true, 
-            color: color,
-            dotData: const FlDotData(show: true),
-            belowBarData: BarAreaData(show: false),
-          ),
+          LineChartBarData(spots: spots, isCurved: true, color: color, dotData: const FlDotData(show: true), belowBarData: BarAreaData(show: true, color: color.withOpacity(0.1)), barWidth: 3),
         ],
       ),
+    );
+  }
+
+  FlTitlesData _buildTitlesData(List<String> sortedDates) {
+    return FlTitlesData(
+      bottomTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          interval: 1,
+          getTitlesWidget: (value, meta) {
+            final index = value.toInt();
+            if (index < 0 || index >= sortedDates.length) return const SizedBox.shrink();
+            final dateParts = sortedDates[index].split('/');
+            return Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: Text('${dateParts[0]}', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            );
+          },
+        ),
+      ),
+      leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)), // Hide Left Titles for Cleaner Look
+      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
     );
   }
 }

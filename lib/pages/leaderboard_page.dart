@@ -126,15 +126,15 @@ class LeaderboardPage extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Image.asset(
-                    'assets/Sribuu Smart.png',
-                    height: 80,
-                    width: 80,
+                    'assets/Sribuu_Smart.png',
+                    height: 126,
+                    width: 126,
                     fit: BoxFit.contain,
                     errorBuilder: (context, error, stackTrace) => 
                         const Icon(Icons.emoji_events, size: 80, color: Colors.white),
                   ),
                   const SizedBox(height: 10),
-                  const Text("Sribuu Smart", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+
                 ],
               ),
             ),
