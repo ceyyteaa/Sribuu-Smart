@@ -56,7 +56,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     super.initState();
     _currentUser = _auth.currentUser;
     // Set locale format uang ke Indonesia
-    Intl.defaultLocale = 'id_ID'; 
+    Intl.defaultLocale = 'id_ID';
 
     tz.initializeTimeZones();
     _initNotifications();
@@ -76,6 +76,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void dispose() {
     _transactionSubscription?.cancel();
     super.dispose();
+  }
+
+  // --- HELPER MENGHITUNG SALDO REAL-TIME UNTUK VALIDASI ---
+  int _hitungSaldoSaatIni() {
+    int totalMasuk = transaksi
+        .where((e) => e['jenis'] == 'masuk')
+        .fold(0, (sum, item) => sum + (item['jumlah'] as int));
+    int totalKeluar = transaksi
+        .where((e) => e['jenis'] == 'keluar')
+        .fold(0, (sum, item) => sum + (item['jumlah'] as int));
+    return totalMasuk - totalKeluar;
   }
 
   // --- LOGIKA NOTIFIKASI ---
@@ -231,13 +242,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Future<void> _updateSaldoKeFirestore() async {
     if (_currentUser == null) return;
-    int totalMasuk = transaksi
-        .where((e) => e['jenis'] == 'masuk')
-        .fold(0, (sum, item) => sum + (item['jumlah'] as int));
-    int totalKeluar = transaksi
-        .where((e) => e['jenis'] == 'keluar')
-        .fold(0, (sum, item) => sum + (item['jumlah'] as int));
-    int saldoSaatIni = totalMasuk - totalKeluar;
+    int saldoSaatIni = _hitungSaldoSaatIni();
 
     try {
       await _firestore.collection('users').doc(_currentUser!.uid).set({
@@ -462,9 +467,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // --- 🔥 PERBAIKAN BOTTOM OVERFLOW 🔥 ---
-  // Fungsi ini menggunakan `scrollable: true` dan struktur yang benar
-  // agar saat keyboard muncul, dialog bisa di-scroll dan tidak error.
+  // --- 🔥 PERBAIKAN BOTTOM OVERFLOW & VALIDASI SALDO 🔥 ---
   void _showInputDialog({String jenis = 'masuk', int? index}) {
     final transactionItem = index != null && index < transaksi.length ? transaksi[index] : null;
 
@@ -482,25 +485,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
           return AlertDialog(
-            // KUNCI PERBAIKAN: scrollable true agar tidak overflow saat keyboard muncul
-            scrollable: true, 
+            scrollable: true,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
             title: Text(
               index == null
-                  ? (jenis == 'masuk' ? 'Tambah Pemasukan' : 'Tambah Pengeluaran')
+                  ? (jenis == 'masuk' ? 'Tambah Pemasukan' : 'Catat Pengeluaran')
                   : 'Edit Transaksi',
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             content: Container(
-              // Pastikan lebar dialog optimal
-              width: double.maxFinite, 
+              width: double.maxFinite,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
                     controller: controllerKeterangan,
                     decoration: const InputDecoration(
-                      labelText: 'Keterangan',
+                      labelText: 'Kategori / Keterangan', 
+                      hintText: 'Contoh: Makanan, Transport, Gaji',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -560,7 +562,54 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 onPressed: () {
                   if (controllerKeterangan.text.isNotEmpty &&
                       controllerJumlah.text.isNotEmpty) {
+                    
                     int jumlahInt = int.tryParse(controllerJumlah.text) ?? 0;
+
+                    // --- 1. Validasi Angka Tidak Boleh <= 0 ---
+                    if (jumlahInt <= 0) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("⚠️ Jumlah harus lebih dari 0!"),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                      return; // Batalkan
+                    }
+
+                    // --- 2. Validasi Saldo Tidak Boleh Minus (Khusus Pengeluaran) ---
+                    if (jenis == 'keluar') {
+                      int saldoSaatIni = _hitungSaldoSaatIni();
+                      
+                      // Jika sedang EDIT, kembalikan dulu nominal lama ke saldo 'bayangan'
+                      // agar perbandingannya adil.
+                      if (index != null) {
+                         // Pastikan data lama memang pengeluaran sebelum dikembalikan
+                         if (transaksi[index]['jenis'] == 'keluar') {
+                            saldoSaatIni += (transaksi[index]['jumlah'] as int);
+                         }
+                      }
+
+                      if (jumlahInt > saldoSaatIni) {
+                        // Tampilkan DIALOG PEMBERITAHUAN sesuai permintaan
+                        showDialog(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text("⚠️ Saldo Tidak Mencukupi"),
+                            content: Text(
+                                "Anda tidak bisa mencatat pengeluaran sebesar Rp ${NumberFormat('#,###', 'id_ID').format(jumlahInt)} karena saldo anda saat ini hanya Rp ${NumberFormat('#,###', 'id_ID').format(saldoSaatIni)}."),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx),
+                                child: const Text("Oke"),
+                              )
+                            ],
+                          ),
+                        );
+                        return; // Batalkan penyimpanan
+                      }
+                    }
+                    // --- Akhir Validasi Saldo ---
+
                     if (index == null) {
                       _tambahTransaksi(
                         jenis,
@@ -634,9 +683,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               children: [
                 Image.asset(
                   'assets/Sribuu_Smart.png',
-                  height: 80, // Disesuaikan agar responsif
+                  height: 80,
                   width: 80,
-                  fit: BoxFit.contain, 
+                  fit: BoxFit.contain,
                   errorBuilder: (context, error, stackTrace) {
                     return const Icon(Icons.account_balance_wallet,
                         size: 80, color: Colors.white);
@@ -878,13 +927,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 child: ChoiceChip(
                   label: Text(f),
                   selected: filter == f,
-                  selectedColor: f == "Pemasukan" 
-                      ? Colors.green[100] 
-                      : f == "Pengeluaran" 
-                          ? Colors.red[100] 
+                  selectedColor: f == "Pemasukan"
+                      ? Colors.green[100]
+                      : f == "Pengeluaran"
+                          ? Colors.red[100]
                           : Colors.blue[100],
                   labelStyle: TextStyle(
-                    color: filter == f 
+                    color: filter == f
                         ? (f == "Pemasukan" ? Colors.green[800] : f == "Pengeluaran" ? Colors.red[800] : Colors.blue[800])
                         : Colors.black,
                   ),
@@ -937,7 +986,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
               title: Text(item['keterangan']),
               subtitle: Text(tanggal),
-              trailing: FittedBox( // RESPONSIVITAS: Agar teks harga tidak overflow di HP kecil
+              trailing: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
                   "Rp ${NumberFormat.currency(locale: 'id_ID', symbol: '', decimalDigits: 0).format((item['jumlah'] as int).toDouble())}",
@@ -978,7 +1027,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // 🔥 PERBAIKAN RESPONSIVITAS KARTU SALDO 🔥
   Widget _buildSummaryCard(
       String title, int amount, Color color, IconData icon) {
     return Card(
@@ -997,9 +1045,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 children: [
                   Text(title,
                       style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w500)), // Font size disesuaikan
+                          fontSize: 12, fontWeight: FontWeight.w500)),
                   const SizedBox(height: 4),
-                  // Gunakan FittedBox agar angka besar otomatis mengecil
                   FittedBox(
                     fit: BoxFit.scaleDown,
                     alignment: Alignment.centerLeft,
@@ -1022,13 +1069,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    int saldo = _hitungSaldoSaatIni();
     int totalMasuk = transaksi
         .where((e) => e['jenis'] == 'masuk')
         .fold(0, (sum, item) => sum + (item['jumlah'] as int));
     int totalKeluar = transaksi
         .where((e) => e['jenis'] == 'keluar')
         .fold(0, (sum, item) => sum + (item['jumlah'] as int));
-    int saldo = totalMasuk - totalKeluar;
 
     final filtered = _getFilteredTransaksi();
 
